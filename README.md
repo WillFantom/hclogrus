@@ -30,3 +30,18 @@ The following structure is used for JSON log entries sent to Healthchecks.io...
  - Data (`data`): A JSON object of the fields given to the logrus entry (from the logrus entry).
  - Ticker (`ticker`): A boolean value, that if true, means the the message is not a new entry, and instead is just a tick from the inteval ticker and will likey be repeating the last entry.
   
+--- 
+
+## Job Execution Time Monitoring
+
+Healthchecks.io supports execution time monitoring via the `/start` suffix on the ping URL. The next message, success or failure, is then considered the end of the job (Maybe jobs should be taggable?). With this plugin, a log entry is considered a start entry if it has the field `@hc_job_start` set to `true`. This can be set like so:
+
+```go
+...
+logrus.WithField(hclogrus.JobStartField, true).Infoln("Job Starting...")
+...
+```
+
+The next entry will be considered the job completion entry, failure or not.
+
+> ⚠️ Ticker messages will never be flagged as job start messages, nor will entries that will flag a failure.
