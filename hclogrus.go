@@ -18,7 +18,7 @@ type HCLogrusHook struct {
 	checkURL    string
 	failLevels  []logrus.Level
 	interval    time.Duration
-	messageSent chan *LogMessage
+	messageSent chan LogMessage
 }
 
 // LogMessage is the strucutre that log messages will take when sent to
@@ -32,9 +32,13 @@ type LogMessage struct {
 	Ticker      bool           `json:"ticker"`
 }
 
+const (
+	JobStartField string = "@hc_job_start"
+)
+
 var (
-	baseURL       string      = "https://hc-ping.com"
-	tickerMessage *LogMessage = &LogMessage{
+	baseURL       string     = "https://hc-ping.com"
+	tickerMessage LogMessage = LogMessage{
 		Level:       -1,
 		LevelString: "ticker",
 		Message:     "",
@@ -53,7 +57,7 @@ func New(checkID string, tickDuration time.Duration, failLevels ...logrus.Level)
 		checkURL:    "",
 		failLevels:  failLevels,
 		interval:    tickDuration,
-		messageSent: make(chan *LogMessage),
+		messageSent: make(chan LogMessage),
 	}
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -98,7 +102,7 @@ func (h *HCLogrusHook) Fire(entry *logrus.Entry) error {
 		Ticker:      false,
 	}
 	go h.sendLogMessage(message)
-	h.messageSent <- message
+	h.messageSent <- *message
 	return nil
 }
 
@@ -116,11 +120,12 @@ func (h *HCLogrusHook) sendLogMessage(lm *LogMessage) error {
 	m, _ := json.Marshal(lm)
 	messageBytes := bytes.NewBuffer(m)
 	endpoint := h.checkURL
-	for _, l := range h.failLevels {
-		if logrus.Level(lm.Level) == l {
-			// TODO: Use Go 1.19 url path join method (when not in beta)
-			endpoint = fmt.Sprintf("%s/%s", endpoint, "fail")
-		}
+	if h.isFailureEntry(logrus.Level(lm.Level)) {
+		// TODO: Use Go 1.19 url path join method (when not in beta)
+		endpoint = fmt.Sprintf("%s/%s", endpoint, "fail")
+	} else if h.isJobStartEntry(lm.Data) && !lm.Ticker {
+		// TODO: Use Go 1.19 url path join method (when not in beta)
+		endpoint = fmt.Sprintf("%s/%s", endpoint, "start")
 	}
 	request, err := http.NewRequest("POST", endpoint, messageBytes)
 	if err != nil {
@@ -135,13 +140,31 @@ func (h *HCLogrusHook) sendLogMessage(lm *LogMessage) error {
 	return nil
 }
 
+func (h *HCLogrusHook) isFailureEntry(level logrus.Level) bool {
+	for _, l := range h.failLevels {
+		if logrus.Level(level) == l {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *HCLogrusHook) isJobStartEntry(entryData logrus.Fields) bool {
+	if startField, ok := entryData[JobStartField]; ok {
+		if isStart, ok := startField.(bool); ok {
+			return isStart
+		}
+	}
+	return false
+}
+
 func (h *HCLogrusHook) tick() {
 	message := tickerMessage
 	for {
 		message.Ticker = true
 		select {
 		case <-time.After(h.interval):
-			h.sendLogMessage(message)
+			h.sendLogMessage(&message)
 		case m, ok := <-h.messageSent:
 			if !ok {
 				return
