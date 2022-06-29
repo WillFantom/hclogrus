@@ -12,7 +12,10 @@ var (
 )
 
 func main() {
-	hcHook, _ := hclogrus.New(checkID, time.Second, logrus.ErrorLevel)
+	hcHook, err := hclogrus.New(checkID, time.Second, logrus.ErrorLevel)
+	if err != nil {
+		panic(err)
+	}
 	logrus.AddHook(hcHook)
 	logrus.WithField("example", "healthchecks.io hook").Infoln("Hello, world!")
 	time.Sleep(time.Second * 3)

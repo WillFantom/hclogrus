@@ -15,11 +15,14 @@ import (
 // HCLogrusHook allows for log messages to be set to a specific Healthchecks.io
 // check.
 type HCLogrusHook struct {
-	checkID     string
+	checkURL    string
 	failLevels  []logrus.Level
+	interval    time.Duration
 	messageSent chan *LogMessage
 }
 
+// LogMessage is the strucutre that log messages will take when sent to
+// Healthchecks.io.
 type LogMessage struct {
 	Level       int            `json:"level"`
 	LevelString string         `json:"level_string"`
@@ -43,14 +46,22 @@ var (
 // healthchecks.io must be provided, along with the period in which the ticker
 // should execte. An optional set of log levels should be provided, that if
 // used, will flag the log as an error, marking the check as failed. An error is
-// returned if an initial check ping fails.
+// returned if an initial check ping fails or if the ping URL can not be created
+// from the provided checkID.
 func New(checkID string, tickDuration time.Duration, failLevels ...logrus.Level) (*HCLogrusHook, error) {
 	h := &HCLogrusHook{
-		checkID:     checkID,
+		checkURL:    "",
 		failLevels:  failLevels,
+		interval:    tickDuration,
 		messageSent: make(chan *LogMessage),
 	}
-	go h.tick(tickDuration)
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create healthchecks.io ping url: %w", err)
+	}
+	u.Path = path.Join(u.Path, checkID)
+	h.checkURL = u.String()
+	go h.tick()
 	if err := h.sendLogMessage(&LogMessage{
 		Level:       -1,
 		LevelString: "startup",
@@ -76,7 +87,7 @@ func SetBaseURL(base string) {
 
 // Fire is called when logging by Logrus. It creates a LogMessage from a Logrus
 // entry and sends this to healthchecks.io. If the hc-ping fails, no error is
-// returned...
+// returned... (in order to keep things speedy).
 func (h *HCLogrusHook) Fire(entry *logrus.Entry) error {
 	message := &LogMessage{
 		Level:       int(entry.Level),
@@ -95,36 +106,41 @@ func (h *HCLogrusHook) Levels() []logrus.Level {
 	return logrus.AllLevels
 }
 
+// SetTickerInterval allows the interval at which ticker messages are sent to be
+// changed.
+func (h *HCLogrusHook) SetTickerInterval(interval time.Duration) {
+	h.interval = interval
+}
+
 func (h *HCLogrusHook) sendLogMessage(lm *LogMessage) error {
 	m, _ := json.Marshal(lm)
 	messageBytes := bytes.NewBuffer(m)
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return fmt.Errorf("failed to create healthchecks.io ping url: %w", err)
-	}
-	u.Path = path.Join(u.Path, h.checkID)
+	endpoint := h.checkURL
 	for _, l := range h.failLevels {
 		if logrus.Level(lm.Level) == l {
-			u.Path = path.Join(u.Path, "fail")
+			// TODO: Use Go 1.19 url path join method (when not in beta)
+			endpoint = fmt.Sprintf("%s/%s", endpoint, "fail")
 		}
 	}
-	request, err := http.NewRequest("POST", u.String(), messageBytes)
+	request, err := http.NewRequest("POST", endpoint, messageBytes)
 	if err != nil {
 		return fmt.Errorf("failed to create log message for healthchecks.io")
 	}
-	resp, err := new(http.Client).Do(request)
-	if err != nil || resp.StatusCode != 200 {
+	hc := http.Client{
+		Timeout: time.Second * 2,
+	}
+	if _, err := hc.Do(request); err != nil {
 		return fmt.Errorf("failed to send log entry to healthchecks.io: %w", err)
 	}
 	return nil
 }
 
-func (h *HCLogrusHook) tick(period time.Duration) {
+func (h *HCLogrusHook) tick() {
 	message := tickerMessage
 	for {
 		message.Ticker = true
 		select {
-		case <-time.After(period):
+		case <-time.After(h.interval):
 			h.sendLogMessage(message)
 		case m, ok := <-h.messageSent:
 			if !ok {
